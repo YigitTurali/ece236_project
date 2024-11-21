@@ -1,6 +1,6 @@
 import numpy as np
 from sklearn.metrics import normalized_mutual_info_score, accuracy_score
-from pyomo.environ import *
+from scipy.optimize import linprog
 from sklearn.decomposition import PCA
 
 ### TODO: import any other packages you need for your solution
@@ -43,152 +43,234 @@ class MyClassifier:
 #--- Task 2 ---#
 class MyClustering:
     def __init__(self, K):
-        self.K = K  # number of classes
+        self.K = K  # number of clusters
         self.labels = None
+        self.cluster_centers_ = None  # Cluster centroids
+        self.varience_threshold = 0.98
 
-        ### TODO: Initialize other parameters needed in your algorithm
-        # Initialize parameters
-        self.cluster_centers_ = None
-        self.pca = None
-        self.V = None  # PCA projection matrix
-        self.mu = None  # Data mean for centering
-        self.tilde_M = None  # Reduced dimension after PCA
-        self.alpha = 0.95  # PCA variance ratio
-        
-    def pca_preprocessing(self, X):
-        """PCA preprocessing step"""
-        # Center the data
-        self.mu = np.mean(X, axis=0)
-        X_centered = X - self.mu
-        
-        # Perform PCA
-        self.pca = PCA(n_components=self.alpha)
-        X_tilde = self.pca.fit_transform(X_centered)
-        self.V = self.pca.components_.T
-        self.tilde_M = X_tilde.shape[1]
-        
-        return X_tilde
-    
-    def solve_lp_clustering(self, X_tilde):
+    def preprocess_data(self, X):
         """
-        Solve LP clustering problem using Pyomo.
+        Apply PCA to reduce dimensionality.
+        """
+        # Fit PCA to the data
+        self.pca = PCA()
+        self.pca.fit(X)
+        
+        # Calculate cumulative variance
+        cumulative_variance = self.pca.explained_variance_ratio_.cumsum()
+        
+        # Determine the number of components to cover the desired variance
+        n_components = (cumulative_variance >= self.varience_threshold).argmax() + 1
+        
+        # Apply PCA with the determined number of components
+        self.pca = PCA(n_components=n_components)
+        X_reduced = self.pca.fit_transform(X)
+        
+        print(f"Number of components selected: {n_components}")
+        print(f"Explained variance covered: {cumulative_variance[n_components-1]:.2f}")
+    
+        return X_reduced
+
+    def postprocess_centroids(self):
+        """
+        Transform centroids back to the original feature space.
+        """
+        if self.pca is not None:
+            return self.pca.inverse_transform(self.cluster_centers_)
+        return self.cluster_centers_
+
+    def kmeans_plus_plus_init(self,X, K):
+        """
+        Initialize centroids using K-means++.
+
         Args:
-            X_tilde (ndarray): Data points (N x M).
+            X (ndarray): Dataset of shape (N, M).
             K (int): Number of clusters.
 
         Returns:
-            Z (ndarray): Cluster assignments (soft, N x K).
-            C (ndarray): Centroids (K x M).
+            centroids (ndarray): Initialized centroids of shape (K, M).
         """
-        N, M = X_tilde.shape  # N: number of data points, M: data dimension
+        N, M = X.shape
+        centroids = []
 
-        # Create a Pyomo model
-        model = ConcreteModel()
+        # Step 1: Randomly select the first centroid
+        first_centroid_idx = np.random.choice(N)
+        centroids.append(X[first_centroid_idx])
 
-        # Decision variables
-        model.Z = Var(range(N), range(self.K), bounds=(0, 1))  # Soft cluster assignments
-        model.C = Var(range(self.K), range(M), domain=Reals)  # Centroids
-        model.U = Var(range(N), range(self.K), range(M), bounds=(0, None))  # Positive part
-        model.V = Var(range(N), range(self.K), range(M), bounds=(0, None))  # Negative part
-        model.D = Var(range(N), range(self.K), bounds=(0, None))  # Distances
+        # Step 2: Select remaining K-1 centroids
+        for _ in range(1, K):
+            # Compute distances from each point to the closest centroid
+            distances = np.array([min(np.linalg.norm(x - c)**2 for c in centroids) for x in X])
 
-        # Objective function: Minimize weighted distances
-        model.obj = Objective(
-            expr=sum(model.Z[i, j] * model.D[i, j] for i in range(N) for j in range(self.K)),
-            sense=minimize
-        )
+            # Compute probabilities proportional to squared distances
+            probabilities = distances / distances.sum()
 
-        # Constraints
+            # Randomly select the next centroid based on probabilities
+            next_centroid_idx = np.random.choice(N, p=probabilities)
+            centroids.append(X[next_centroid_idx])
 
-        # Each point is assigned to exactly one cluster
-        model.assignment = ConstraintList()
+        return np.array(centroids)
+
+    def formulate_lp(self, X, K):
+        """
+        Formulate the LP for soft clustering.
+        """
+        N, M = X.shape  # Number of samples and features
+        n_vars = N * K  # Number of decision variables
+
+        # Compute distance matrix
+        distances = np.zeros((N, K))
         for i in range(N):
-            model.assignment.add(sum(model.Z[i, j] for j in range(self.K)) == 1)
+            for j in range(K):
+                distances[i, j] = np.linalg.norm(X[i] - self.cluster_centers_[j])
 
-        # Each cluster must have at least one point
-        model.cluster = ConstraintList()
-        for j in range(self.K):
-            model.cluster.add(sum(model.Z[i, j] for i in range(N)) >= 1)
+        # Flatten the distance matrix for the objective function
+        c = distances.flatten()
 
-        # Distance constraints
-        model.distance_constraints = ConstraintList()
+        # Equality constraint: Probabilities sum to 1 for each point
+        A_eq = np.zeros((N, n_vars))
         for i in range(N):
-            for j in range(self.K):
-                # Distance calculation: D[i, j] = sum(U[i, j, :] + V[i, j, :])
-                model.distance_constraints.add(
-                    model.D[i, j] == sum(model.U[i, j, k] + model.V[i, j, k] for k in range(M))
-                )
+            for j in range(K):
+                A_eq[i, i * K + j] = 1
+        b_eq = np.ones(N)
 
-                for k in range(M):
-                    # X_tilde[i, k] - C[j, k] = U[i, j, k] - V[i, j, k]
-                    model.distance_constraints.add(
-                        X_tilde[i, k] - model.C[j, k] == model.U[i, j, k] - model.V[i, j, k]
-                    )
+        # Bounds: 0 <= z_ij <= 1
+        bounds = [(0, 1) for _ in range(n_vars)]
 
-        # Solver
-        solver = SolverFactory('glpk')  # Default open-source solver
-        result = solver.solve(model, tee=True)
+        # Add entropy terms
+        gamma = 0.2
+        cluster_sizes = np.sum(self.z_prev, axis=0) if hasattr(self, 'z_prev') else np.ones(K)/K
+        entropy_penalty = -gamma * np.log(cluster_sizes + 1e-10)
+        c = c.reshape(N, K) + entropy_penalty
+        c = c.flatten()
 
-        if result.solver.termination_condition != TerminationCondition.optimal:
-            raise ValueError(f"Optimization failed: {result.solver.termination_condition}")
+        return c, A_eq, b_eq, bounds
 
-        # Extract results
-        Z = np.array([[model.Z[i, j].value for j in range(self.K)] for i in range(N)])
-        C = np.array([[model.C[j, k].value for k in range(M)] for j in range(self.K)])
-
-        return Z, C
     
-    def post_processing(self, Z, C, X_tilde):
-        """Post-processing to get hard assignments"""
-        N = X_tilde.shape[0]
-        labels = np.argmax(Z, axis=1)
-        
-        # Update centroids
-        for j in range(self.K):
-            mask = labels == j
-            if np.sum(mask) > 0:
-                C[j] = np.mean(X_tilde[mask], axis=0)
-            
-            return labels, C
+    def solve_lp(self, c, A_eq, b_eq, bounds):
+        """
+        Solve the LP using linprog.
+
+        Args:
+            c (ndarray): Coefficients for the objective function.
+            A_eq (ndarray): Equality constraint matrix.
+            b_eq (ndarray): Equality constraint vector.
+            bounds (list): Bounds for decision variables.
+
+        Returns:
+            z (ndarray): Optimized decision variables.
+        """
+        result = linprog(c, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method="highs")
+        if not result.success:
+            raise ValueError("LP solution failed.")
+        return result.x
     
-    def train(self, trainX):
-        """Main training function"""
-        # Step 1: PCA preprocessing
-        X_tilde = self.pca_preprocessing(trainX)
-        print(f"Reduced dimension: {X_tilde}")
+    def update_centroids(self, X, z, K):
+        """
+        Update centroids using soft assignments.
+        """
+        new_centroids = []
+        z = z.reshape(X.shape[0], K)  # Reshape z to (N, K)
+        for j in range(K):
+            weights = z[:, j]
+            weighted_sum = np.sum(weights[:, None] * X, axis=0)
+            centroid = weighted_sum / weights.sum()
+            new_centroids.append(centroid)
+        return np.array(new_centroids)
+    
+    def train_reduced(self, trainX, max_iters=20, tol=1e-4):
+        """
+        Iterative LP-based clustering with PCA preprocessing.
+        """
+        # Apply PCA preprocessing
+        trainX_reduced = self.preprocess_data(trainX)
+
+        # Initialize centroids randomly in PCA-reduced space
+        self.cluster_centers_ = trainX_reduced[np.random.choice(trainX_reduced.shape[0], self.K, replace=False)]
+
+        for iteration in range(max_iters):
+            # Formulate and solve LP for current centroids
+            c, A_eq, b_eq, bounds = self.formulate_lp(trainX_reduced, self.K)
+            z = self.solve_lp(c, A_eq, b_eq, bounds)
+            z = z.reshape(trainX_reduced.shape[0], self.K)
+
+            # Assign clusters
+            self.labels = np.argmax(z, axis=1)
+
+            # Update centroids
+            new_centroids = self.update_centroids(trainX_reduced, z, self.K)
+
+            # Check for convergence
+            if np.linalg.norm(new_centroids - self.cluster_centers_) < tol:
+                print(f"Converged after {iteration + 1} iterations.")
+                break
+
+            self.cluster_centers_ = new_centroids
         
-        # Step 2: Solve LP
-        Z, C = self.solve_lp_clustering(X_tilde)
-        print(f"Cluster centers: {C}")
-        print(f"Cluster assignments: {Z}")
+        return self.labels
+
+    
+    def train(self, trainX, max_iters=20, tol=1e-4):
+        """
+        Task 2-2: Iterative LP-based clustering.
         
-        # Step 3: Post-processing
-        self.labels, self.cluster_centers_ = self.post_processing(Z, C, X_tilde)
-        print(f"Final cluster centers: {self.cluster_centers_}")
-        print(f"Final cluster assignments: {self.labels}")
+        Args:
+            trainX (ndarray): Training data of shape (N, M).
+            max_iters (int): Maximum number of iterations for centroid refinement.
+            tol (float): Convergence tolerance for centroids.
+        """
+
+        # Initialize centroids randomly
+        self.cluster_centers_ = self.kmeans_plus_plus_init(trainX, self.K)
+
+        for iteration in range(max_iters):
+            # Step 1: Formulate and solve LP for current centroids
+            c, A_eq, b_eq, bounds = self.formulate_lp(trainX, self.K)
+            z = self.solve_lp(c, A_eq, b_eq, bounds)
+            z = z.reshape(trainX.shape[0], self.K)
+
+            # Step 2: Assign clusters
+            self.labels = np.argmax(z, axis=1)
+
+            # Step 3: Update centroids
+            new_centroids = []
+            for cluster_id in range(self.K):
+                cluster_points = trainX[self.labels == cluster_id]
+                if len(cluster_points) > 0:
+                    new_centroids.append(cluster_points.mean(axis=0))
+                else:
+                    # Handle empty cluster
+                    new_centroids.append(self.cluster_centers_[cluster_id])  # Keep old centroid
+
+            new_centroids = np.array(new_centroids)
+
+            # Check for convergence
+            if np.linalg.norm(new_centroids - self.cluster_centers_) < tol:
+                print(f"Converged after {iteration + 1} iterations.")
+                break
+
+            self.cluster_centers_ = new_centroids
+
         return self.labels
     
-    
     def infer_cluster(self, testX):
-        """Assign new points to clusters"""
-        # Project test data
-        X_centered = testX - self.mu
-        X_tilde = self.pca.transform(X_centered)
-        
-        # Compute distances to centroids
-        N = X_tilde.shape[0]
-        distances = np.zeros((N, self.K))
-        
-        for i in range(N):
-            for j in range(self.K):
-                # Compute L1 distance
-                distances[i, j] = np.sum(np.abs(X_tilde[i] - self.cluster_centers_[j]))
-        
-        # Assign to nearest centroid
-        pred_labels = np.argmin(distances, axis=1)
-        
+        """
+        Assign new data points to the existing clusters and postprocess results.
+        """
+        # Transform test data using PCA
+        testX_reduced = self.pca.transform(testX)
+
+        # Assign clusters based on the nearest cluster centroid in reduced space
+        pred_labels = np.array([
+            np.argmin([np.linalg.norm(x - c) for c in self.cluster_centers_])
+            for x in testX_reduced
+        ])
+
+        # Postprocess centroids back to original space for interpretation (optional)
+        self.cluster_centers_original_ = self.postprocess_centroids()
+
         return pred_labels
-    
+        
 
     def evaluate_clustering(self, trainY):
         label_reference = self.get_class_cluster_reference(self.labels, trainY)
@@ -225,7 +307,6 @@ class MyClustering:
             aligned_lables[i] = reference[cluster_labels[i]]
 
         return aligned_lables
-
 
 
 ##########################################################################
