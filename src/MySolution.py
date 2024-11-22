@@ -46,7 +46,7 @@ class MyClustering:
         self.K = K  # number of clusters
         self.labels = None
         self.cluster_centers_ = None  # Cluster centroids
-        self.varience_threshold = 0.98
+        self.varience_threshold = 0.95
 
     def preprocess_data(self, X):
         """
@@ -137,13 +137,6 @@ class MyClustering:
         # Bounds: 0 <= z_ij <= 1
         bounds = [(0, 1) for _ in range(n_vars)]
 
-        # Add entropy terms
-        gamma = 0.2
-        cluster_sizes = np.sum(self.z_prev, axis=0) if hasattr(self, 'z_prev') else np.ones(K)/K
-        entropy_penalty = -gamma * np.log(cluster_sizes + 1e-10)
-        c = c.reshape(N, K) + entropy_penalty
-        c = c.flatten()
-
         return c, A_eq, b_eq, bounds
 
     
@@ -178,7 +171,7 @@ class MyClustering:
             new_centroids.append(centroid)
         return np.array(new_centroids)
     
-    def train_reduced(self, trainX, max_iters=20, tol=1e-4):
+    def train(self, trainX, max_iters=20, tol=1e-4):
         """
         Iterative LP-based clustering with PCA preprocessing.
         """
@@ -207,50 +200,6 @@ class MyClustering:
 
             self.cluster_centers_ = new_centroids
         
-        return self.labels
-
-    
-    def train(self, trainX, max_iters=20, tol=1e-4):
-        """
-        Task 2-2: Iterative LP-based clustering.
-        
-        Args:
-            trainX (ndarray): Training data of shape (N, M).
-            max_iters (int): Maximum number of iterations for centroid refinement.
-            tol (float): Convergence tolerance for centroids.
-        """
-
-        # Initialize centroids randomly
-        self.cluster_centers_ = self.kmeans_plus_plus_init(trainX, self.K)
-
-        for iteration in range(max_iters):
-            # Step 1: Formulate and solve LP for current centroids
-            c, A_eq, b_eq, bounds = self.formulate_lp(trainX, self.K)
-            z = self.solve_lp(c, A_eq, b_eq, bounds)
-            z = z.reshape(trainX.shape[0], self.K)
-
-            # Step 2: Assign clusters
-            self.labels = np.argmax(z, axis=1)
-
-            # Step 3: Update centroids
-            new_centroids = []
-            for cluster_id in range(self.K):
-                cluster_points = trainX[self.labels == cluster_id]
-                if len(cluster_points) > 0:
-                    new_centroids.append(cluster_points.mean(axis=0))
-                else:
-                    # Handle empty cluster
-                    new_centroids.append(self.cluster_centers_[cluster_id])  # Keep old centroid
-
-            new_centroids = np.array(new_centroids)
-
-            # Check for convergence
-            if np.linalg.norm(new_centroids - self.cluster_centers_) < tol:
-                print(f"Converged after {iteration + 1} iterations.")
-                break
-
-            self.cluster_centers_ = new_centroids
-
         return self.labels
     
     def infer_cluster(self, testX):
