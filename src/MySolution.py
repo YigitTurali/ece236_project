@@ -402,18 +402,111 @@ class MyLabelSelection:
 
 ##########################################################################
 #--- Task 3 (Option 2) ---#
+from gekko import GEKKO
+
 class MyFeatureSelection:
     def __init__(self, num_features):
         self.num_features = num_features  # target number of features
-        ### TODO: Initialize other parameters needed in your algorithm
-
+        self.coords = np.zeros([num_features,2])  # x/y pixel coordinates for selected features
+    
+    def Covariance(self, X,y):
+        N_features = X.shape[1]
+        cov_vec = np.zeros(N_features)
+        for i in range(X.shape[1]):
+            x_i = X[:,i]
+            xbar, ybar = x_i.mean(), y.mean()
+            cov_vec[i] = np.sum((x_i-xbar)*(y-ybar))/(len(x_i)-1)
+        return cov_vec
 
     def construct_new_features(self, trainX, trainY=None):  # NOTE: trainY can only be used for construting features for classification task
         ''' Task 3-2'''
-        
 
+        # Do clustering branch
+        if trainY==None:
+            variance = np.var(trainX, axis=0)
+
+
+        # Do classification branch
+        elif trainY != None:
+
+            # Get dataset unique labels and the sample indices corresponding to those labels
+            unique_labels = np.unique(trainY)
+            indices_per_label = []
+            for i, label in enumerate(unique_labels):
+                indices = np.where(trainY == label)
+                indices_per_label.append(indices)
+
+
+            # Assume no access to itertools, just use the known possible pairs given the fashion mnist dataset
+            label_pairs = ((0,1), (0,2), (1,2))
+
+            pairwise_covariances = []
+            
+            # Iterate across all potential label pairs
+            for (lbl_idx_a, lbl_idx_b) in label_pairs:
+                lbl_a = unique_labels[lbl_idx_a]
+                lbl_b = unique_labels[lbl_idx_b]
+
+                # Combine sample indices from both classes
+                indices = np.append(indices_per_label[lbl_idx_a], indices_per_label[lbl_idx_b])
+
+                # Get X and Y samples from the indices
+                X_prime = np.take(trainX, indices, axis=0)
+                Y_prime = np.take(trainY, indices)
+                
+                # print(X_prime.shape)
+                # print(Y_prime.shape)
+
+                # relabel original class labels to -1, +1
+                for i in range(len(Y_prime)):
+                    if Y_prime[i] == lbl_a:
+                        Y_prime[i] = 1
+                    elif Y_prime[i] == lbl_b:
+                        Y_prime[i] = -1
+                
+                # compute covariance for the pair of labels
+                pair_covariance = self.Covariance(X_prime, Y_prime)
+                pairwise_covariances.append(np.absolute(pair_covariance))
+            
+                constraints = LinearConstraint
+                # selection = cvxpy.Variable(trainX.shape[1])
+
+                # variable = cvxpy.
+
+                mdl = GEKKO(remote=False)
+
+            # Define max features
+            M = mdl.Const(self.num_features)
+
+            # Define covariance vector constants
+            z_0_1 = mdl.Const(pairwise_covariances[0])
+            z_0_2 = mdl.Const(pairwise_covariances[1])
+            z_1_2 = mdl.Const(pairwise_covariances[2])
+
+            # Define t_min auxiliary variable
+            t_min = mdl.Var(value=0, lb=0)
+
+            # Define pixel selection vector, with its integrality and 0/1 constraints
+            s = mdl.Var(value=0, lb=0, ub=1, integer=True)
+
+            # Define constraints
+            ## Max number of pixels constraint
+            mdl.Equation(np.sum(s) <= M)
+            ## Set t_min to the min sum absolute covariance across all class pairs
+            mdl.Equation(t_min <= np.dot(s, z_0_1))
+            mdl.Equation(t_min <= np.dot(s, z_0_2))
+            mdl.Equation(t_min <= np.dot(s, z_1_2))
+
+            # Set objective function to maximize t_min
+            mdl.Maximize(t_min)
+            mdl.options.MAX_ITER = 10000
+            mdl.options.SOLVER = 1    
+            mdl.options.IMODE = 3
+            mdl.solve(disp=True)
 
         # Return an index list that specifies which features to keep
         return feat_to_keep
+    
+    
     
     
