@@ -214,6 +214,7 @@ class MyClustering:
         Returns:
             centroids (ndarray): Initialized centroids of shape (K, M).
         """
+        np.random.seed(28)
         N, M = X.shape
         centroids = []
 
@@ -382,6 +383,77 @@ class MyClustering:
             aligned_lables[i] = reference[cluster_labels[i]]
 
         return aligned_lables
+
+########################### EXTRA FUNCTIONS FOR TASK 2  ##################
+
+# Plot Function for Clustering NMI
+def plot_clustering_nmi(dataset, title):
+    plt.figure(figsize=(8, 6))
+    for key, values in dataset.items():
+        K = values.get("K", [])
+        clustering_nmi = values.get("clustering_nmi", [])
+        plt.plot(K, clustering_nmi, marker="o", label=f"{key} dataset")
+    plt.xlabel("Number of Clusters (K)")
+    plt.ylabel("Clustering NMI")
+    plt.title(title)
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+# Plot Function for Classification Accuracy
+def plot_classification_accuracy(dataset, title):
+    plt.figure(figsize=(8, 6))
+    for key, values in dataset.items():
+        K = values.get("K", [])
+        classification_accuracy = values.get("classification_accuracy", [])
+        plt.plot(K, classification_accuracy, marker="s", label=f"{key} dataset")
+    plt.xlabel("Number of Clusters (K)")
+    plt.ylabel("Classification Accuracy")
+    plt.title(title)
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+# Function to aggregate and plot performance across partitions
+def plot_performance_across_partitions(data, dataset_name, metric, title, ylabel):
+    """
+    Plots performance (clustering NMI or classification accuracy) across dataset partitions for every cluster size (K).
+    
+    Args:
+        data (dict): Nested dictionary containing partitioned results.
+        dataset_name (str): Dataset name (e.g., 'synthetic' or 'mnist').
+        metric (str): Metric to plot ('clustering_nmi' or 'classification_accuracy').
+        title (str): Title of the plot.
+        ylabel (str): Label for the y-axis.
+    """
+    # Extract unique cluster sizes (K)
+    cluster_sizes = None
+    for portion in data.values():
+        if dataset_name in portion:
+            cluster_sizes = portion[dataset_name]['K']
+            break
+
+    if cluster_sizes is None:
+        raise ValueError(f"Dataset '{dataset_name}' not found in the data.")
+
+    # Aggregate metrics for each cluster size across partitions
+    aggregated_metrics = {k: [] for k in cluster_sizes}
+    for portion, datasets in data.items():
+        if dataset_name in datasets:
+            for k, value in zip(datasets[dataset_name]['K'], datasets[dataset_name][metric]):
+                aggregated_metrics[k].append(value)
+
+    # Plot results
+    plt.figure(figsize=(10, 6))
+    for k, values in aggregated_metrics.items():
+        plt.plot([float(p) for p in data.keys()], values, marker="o", label=f"K = {k}")
+    
+    plt.xlabel("Dataset Portion")
+    plt.ylabel(ylabel)
+    plt.title(title)
+    plt.legend(title="Cluster Size (K)")
+    plt.grid(True)
+    plt.show()
 
 
 ##########################################################################
