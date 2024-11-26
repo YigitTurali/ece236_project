@@ -144,7 +144,7 @@ class MyClassifier(BaseEstimator, ClassifierMixin):
         plt.show()
         
 
-    def plot_decision_boundary(self, X, y, title="Decision Boundary"):
+    def plot_decision_boundary(self, X, y, title="Decision Boundary", size=22):
         h = 0.02 
         x_min, x_max = X[:, 0].min() - 1, X[:, 0].max() + 1
         y_min, y_max = X[:, 1].min() - 1, X[:, 1].max() + 1
@@ -156,9 +156,9 @@ class MyClassifier(BaseEstimator, ClassifierMixin):
         plt.figure(figsize=(10, 8))
         plt.contourf(xx, yy, Z, alpha=0.4)
         plt.scatter(X[:, 0], X[:, 1], c=y, alpha=0.8)
-        plt.title(title)
-        plt.xlabel("Feature 1")
-        plt.ylabel("Feature 2")
+        plt.title(title, fontsize=size)
+        plt.xlabel("Feature 1", fontsize=size)
+        plt.ylabel("Feature 2", fontsize=size)
         plt.show()
     
     
