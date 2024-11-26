@@ -250,7 +250,8 @@ class MyClustering:
 
         # Flatten the distance matrix for the objective function
         c = distances.flatten()
-        c = c + 1e-6 # avoid inf, nan, div0
+        # suppress any inf, NaN, or none-type values
+        c[~np.isfinite(c)]=0
 
         # Equality constraint: Probabilities sum to 1 for each point
         A_eq = np.zeros((N, n_vars))
@@ -368,7 +369,7 @@ class MyClustering:
         label_reference = {}
         for i in range(len(np.unique(cluster_labels))):
             index = np.where(cluster_labels == i,1,0)
-            num = np.bincount(true_labels[index==1]).argmax()
+            num = np.bincount(true_labels[index==1.]).argmax()
             label_reference[i] = num
 
         return label_reference
