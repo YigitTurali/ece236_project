@@ -250,6 +250,7 @@ class MyClustering:
 
         # Flatten the distance matrix for the objective function
         c = distances.flatten()
+        c = c + 1e-6 # avoid inf, nan, div0
 
         # Equality constraint: Probabilities sum to 1 for each point
         A_eq = np.zeros((N, n_vars))
@@ -408,7 +409,8 @@ class MyFeatureSelection:
     def __init__(self, num_features):
         self.num_features = num_features  # target number of features
         self.coords = np.zeros([num_features,2])  # x/y pixel coordinates for selected features
-    
+
+
     def Covariance(self, X,y):
         N_features = X.shape[1]
         cov_vec = np.zeros(N_features)
@@ -418,95 +420,150 @@ class MyFeatureSelection:
             cov_vec[i] = np.sum((x_i-xbar)*(y-ybar))/(len(x_i)-1)
         return cov_vec
 
+
     def construct_new_features(self, trainX, trainY=None):  # NOTE: trainY can only be used for construting features for classification task
         ''' Task 3-2'''
+        feat_to_keep = 0
 
-        # Do clustering branch
-        if trainY==None:
-            variance = np.var(trainX, axis=0)
-
-
-        # Do classification branch
-        elif trainY != None:
-
-            # Get dataset unique labels and the sample indices corresponding to those labels
-            unique_labels = np.unique(trainY)
-            indices_per_label = []
-            for i, label in enumerate(unique_labels):
-                indices = np.where(trainY == label)
-                indices_per_label.append(indices)
-
-
-            # Assume no access to itertools, just use the known possible pairs given the fashion mnist dataset
-            label_pairs = ((0,1), (0,2), (1,2))
-
-            pairwise_covariances = []
+        # If class labels array is NoneType, do clustering branch        
+        if trainY is None:
+            print("doing clustering feature selection")
+            feat_to_keep = self.unsupervised_feature_selection(trainX, trainY)
             
-            # Iterate across all potential label pairs
-            for (lbl_idx_a, lbl_idx_b) in label_pairs:
-                lbl_a = unique_labels[lbl_idx_a]
-                lbl_b = unique_labels[lbl_idx_b]
-
-                # Combine sample indices from both classes
-                indices = np.append(indices_per_label[lbl_idx_a], indices_per_label[lbl_idx_b])
-
-                # Get X and Y samples from the indices
-                X_prime = np.take(trainX, indices, axis=0)
-                Y_prime = np.take(trainY, indices)
-                
-                # print(X_prime.shape)
-                # print(Y_prime.shape)
-
-                # relabel original class labels to -1, +1
-                for i in range(len(Y_prime)):
-                    if Y_prime[i] == lbl_a:
-                        Y_prime[i] = 1
-                    elif Y_prime[i] == lbl_b:
-                        Y_prime[i] = -1
-                
-                # compute covariance for the pair of labels
-                pair_covariance = self.Covariance(X_prime, Y_prime)
-                pairwise_covariances.append(np.absolute(pair_covariance))
+        # Else, do classification branch
+        else:
+            print("doing classification feature selection")
+            feat_to_keep = self.supervised_feature_selection(trainX, trainY)
             
-                constraints = LinearConstraint
-                # selection = cvxpy.Variable(trainX.shape[1])
-
-                # variable = cvxpy.
-
-                mdl = GEKKO(remote=False)
-
-            # Define max features
-            M = mdl.Const(self.num_features)
-
-            # Define covariance vector constants
-            z_0_1 = mdl.Const(pairwise_covariances[0])
-            z_0_2 = mdl.Const(pairwise_covariances[1])
-            z_1_2 = mdl.Const(pairwise_covariances[2])
-
-            # Define t_min auxiliary variable
-            t_min = mdl.Var(value=0, lb=0)
-
-            # Define pixel selection vector, with its integrality and 0/1 constraints
-            s = mdl.Var(value=0, lb=0, ub=1, integer=True)
-
-            # Define constraints
-            ## Max number of pixels constraint
-            mdl.Equation(np.sum(s) <= M)
-            ## Set t_min to the min sum absolute covariance across all class pairs
-            mdl.Equation(t_min <= np.dot(s, z_0_1))
-            mdl.Equation(t_min <= np.dot(s, z_0_2))
-            mdl.Equation(t_min <= np.dot(s, z_1_2))
-
-            # Set objective function to maximize t_min
-            mdl.Maximize(t_min)
-            mdl.options.MAX_ITER = 10000
-            mdl.options.SOLVER = 1    
-            mdl.options.IMODE = 3
-            mdl.solve(disp=True)
-
         # Return an index list that specifies which features to keep
         return feat_to_keep
-    
+
+
+    def unsupervised_feature_selection(self, trainX, trainY): 
+        # Compute pixel variances
+        variance = np.var(trainX, axis=0)
+
+        ## Formulate and run the Integer Linear Program
+        mdl = GEKKO(remote=False)
+
+        # Define max number of features
+        K = mdl.Const(self.num_features)
+
+        # Define covariance vector constants
+        z = [mdl.Const(value=val) for val in variance]
+
+        # Define t_min auxiliary variable
+        t = mdl.Var(value=0, lb=0)
+
+        # Define pixel selection vector, with its integrality and 0/1 constraints
+        s = [mdl.Var(value=0, lb=0, ub=1, integer=True) for i in range(trainX.shape[1])]
+
+        # Define constraints
+        ## Max number of pixels constraint
+        mdl.Equation(np.sum(s) <= K)
+        ## Set t to the sum variance across all selected pixels
+        mdl.Equation(t <= mdl.sum([s_i*z_i for (s_i, z_i) in zip(s,z)]))
+
+        # Set objective function to maximize t
+        mdl.Maximize(t)
+        mdl.options.MAX_ITER = 10000
+        mdl.options.SOLVER = 1    
+        mdl.options.IMODE = 3
+        # mdl.solve(disp=True)
+        mdl.solve()
+
+        # Get the 1/0 mask of selected features from the final values of s
+        feature_mask = np.array([s_i.value for s_i in s])
+
+        # Get feature indices of the selected features from the mask
+        selected_feature_indices = np.nonzero(feature_mask)[0]
+        return selected_feature_indices
+
+
+    def supervised_feature_selection(self, trainX, trainY):
+        # Get dataset unique labels and the sample indices corresponding to those labels
+        unique_labels = np.unique(trainY)
+        indices_per_label = []
+        for i, label in enumerate(unique_labels):
+            indices = np.where(trainY == label)
+            indices_per_label.append(indices)
+
+        # Assume no access to itertools, just use the known possible pairs given the fashion mnist dataset
+        label_pairs = ((0,1), (0,2), (1,2))
+
+        pairwise_covariances = []
+        
+        # Iterate across all potential label pairs
+        for (lbl_idx_a, lbl_idx_b) in label_pairs:
+            lbl_a = unique_labels[lbl_idx_a]
+            lbl_b = unique_labels[lbl_idx_b]
+
+            # Combine sample indices from both classes
+            indices = np.append(indices_per_label[lbl_idx_a], indices_per_label[lbl_idx_b])
+
+            # Get X and Y samples from the indices
+            X_prime = np.take(trainX, indices, axis=0)
+            Y_prime = np.take(trainY, indices)
+            
+            # print(X_prime.shape)
+            # print(Y_prime.shape)
+
+            # relabel original class labels to -1, +1
+            for i in range(len(Y_prime)):
+                if Y_prime[i] == lbl_a:
+                    Y_prime[i] = 1
+                elif Y_prime[i] == lbl_b:
+                    Y_prime[i] = -1
+            
+            # compute covariance for the pair of labels
+            pair_covariance = self.Covariance(X_prime, Y_prime)
+            pairwise_covariances.append(np.absolute(pair_covariance))
+        
+        # Formulate and run the integer linear program
+        mdl = GEKKO(remote=False)
+
+        ### Define constants and variables
+        # Define max features
+        K = mdl.Const(self.num_features)
+        # Define covariance vector constants
+        z_0_1 = [mdl.Const(value=val) for val in pairwise_covariances[0]]
+        z_0_2 = [mdl.Const(value=val) for val in pairwise_covariances[1]]
+        z_1_2 = [mdl.Const(value=val) for val in pairwise_covariances[2]]
+        # Define t_min auxiliary variable
+        t_min = mdl.Var(value=0, lb=0)
+        # Define pixel selection vector, with its integrality and 0/1 constraints
+        s = [mdl.Var(value=0, lb=0, ub=1, integer=True) for i in range(trainX.shape[1])]
+        # s = [mdl.Var(value=0, lb=0, ub=1) for i in range(trainX.shape[1])]
+        # print(len(s))
+
+        ### Define constraints
+        ## Max number of pixels constraint
+        mdl.Equation(np.sum(s) <= K)
+        ## Set t_min to the min sum absolute covariance across all class pairs
+        # mdl.Equation(t_min <= np.dot(s, z_0_1))
+        # mdl.Equation(t_min <= np.dot(s, z_0_2))
+        # mdl.Equation(t_min <= np.dot(s, z_1_2))
+        ## Reformulate dot products as element-wise multiply and sum to avoid errors in GEKKO
+        mdl.Equation(t_min <= mdl.sum([s_i*z_0_1_i for (s_i, z_0_1_i) in zip(s,z_0_1)]))
+        mdl.Equation(t_min <= mdl.sum([s_i*z_0_2_i for (s_i, z_0_2_i) in zip(s,z_0_2)]))
+        mdl.Equation(t_min <= mdl.sum([s_i*z_1_2_i for (s_i, z_1_2_i) in zip(s,z_1_2)]))
+
+        # Set objective function to maximize t_min
+        mdl.Maximize(t_min)
+        mdl.options.MAX_ITER = 10000
+        mdl.options.SOLVER = 1    
+        mdl.options.IMODE = 3
+        # mdl.solve(disp=True)
+        mdl.solve()
+
+        # Get the 1/0 mask of selected features from the final values of s
+        feature_mask = np.array([s_i.value for s_i in s])
+        
+        # Get feature indices of the selected features from the mask
+        selected_feature_indices = np.nonzero(feature_mask)[0]
+        
+        return selected_feature_indices
+
     
     
     
