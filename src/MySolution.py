@@ -520,7 +520,7 @@ class MyFeatureSelection:
         mdl = GEKKO(remote=False)
 
         # Define max number of features
-        K = mdl.Const(self.feature_count)
+        K = mdl.Const(self.num_features)
 
         # Define covariance vector constants
         z = [mdl.Const(value=val) for val in variance]
@@ -550,9 +550,9 @@ class MyFeatureSelection:
         col_abs_deviation = [mdl.abs2(csum-col_avg) for csum in col_sums]
         row_abs_deviation = [mdl.abs2(rsum-row_avg) for rsum in row_sums]
 
-        # Compute variances (per pixel) for rows and columns
-        col_var = mdl.Intermediate(mdl.sum([dev for dev in col_abs_deviation]) / (image_side_length*K))
-        row_var = mdl.Intermediate(mdl.sum([dev for dev in row_abs_deviation]) / (image_side_length*K))
+        # Compute variances for rows and columns
+        col_var = mdl.Intermediate(mdl.sum([dev for dev in col_abs_deviation]) / (image_side_length))
+        row_var = mdl.Intermediate(mdl.sum([dev for dev in row_abs_deviation]) / (image_side_length))
 
         lambda1 = 1E5
         lambda2 = 1E5
@@ -660,12 +660,12 @@ class MyFeatureSelection:
         col_abs_deviation = [mdl.abs2(csum-col_avg) for csum in col_sums]
         row_abs_deviation = [mdl.abs2(rsum-row_avg) for rsum in row_sums]
 
-        # Compute variances (per pixel) for rows and columns
-        col_var = mdl.Intermediate(mdl.sum([dev for dev in col_abs_deviation]) / (image_side_length*K))
-        row_var = mdl.Intermediate(mdl.sum([dev for dev in row_abs_deviation]) / (image_side_length*K))
+        # Compute variances for rows and columns
+        col_var = mdl.Intermediate(mdl.sum([dev for dev in col_abs_deviation]) / (image_side_length))
+        row_var = mdl.Intermediate(mdl.sum([dev for dev in row_abs_deviation]) / (image_side_length))
 
-        lambda1 = 50
-        lambda2 = 50
+        lambda1 = 1E2
+        lambda2 = 1E2
 
 
         # print(len(s))
@@ -697,6 +697,7 @@ class MyFeatureSelection:
                                 'minlp_max_iter_with_int_sol 400']
 
         mdl.solve(disp=True)
+
 
         # Get the 1/0 mask of selected features from the final values of s
         feature_mask = np.array([s_i.value for s_i in s])
