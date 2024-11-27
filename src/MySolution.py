@@ -9,6 +9,7 @@ from sklearn.base import BaseEstimator, ClassifierMixin
 import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import Tuple
+from sklearn.ensemble import RandomForestClassifier
 
 ### TODO: import any other packages you need for your solution
 
@@ -414,6 +415,249 @@ def plot_classification_accuracy(dataset, title):
     plt.grid(True)
     plt.show()
 
+# Soft Clustering
+class MySoftClustering:
+    def __init__(self, K):
+        self.K = K  # number of clusters
+        self.soft_labels = None
+        self.cluster_centers_ = None  # Cluster centroids
+        self.varience_threshold = 0.95
+
+    def preprocess_data(self, X):
+        """
+        Apply PCA to reduce dimensionality.
+        """
+        # Fit PCA to the data
+        self.pca = PCA()
+        self.pca.fit(X)
+        
+        # Calculate cumulative variance
+        cumulative_variance = self.pca.explained_variance_ratio_.cumsum()
+        
+        # Determine the number of components to cover the desired variance
+        n_components = (cumulative_variance >= self.varience_threshold).argmax() + 1
+        
+        # Apply PCA with the determined number of components
+        self.pca = PCA(n_components=n_components)
+        X_reduced = self.pca.fit_transform(X)
+        
+        print(f"Number of components selected: {n_components}")
+        print(f"Explained variance covered: {cumulative_variance[n_components-1]:.2f}")
+    
+        return X_reduced
+
+    def postprocess_centroids(self):
+        """
+        Transform centroids back to the original feature space.
+        """
+        if self.pca is not None:
+            return self.pca.inverse_transform(self.cluster_centers_)
+        return self.cluster_centers_
+
+    def kmeans_plus_plus_init(self,X, K):
+        """
+        Initialize centroids using K-means++.
+
+        Args:
+            X (ndarray): Dataset of shape (N, M).
+            K (int): Number of clusters.
+
+        Returns:
+            centroids (ndarray): Initialized centroids of shape (K, M).
+        """
+        np.random.seed(28)
+        N, M = X.shape
+        centroids = []
+
+        # Step 1: Randomly select the first centroid
+        first_centroid_idx = np.random.choice(N)
+        centroids.append(X[first_centroid_idx])
+
+        # Step 2: Select remaining K-1 centroids
+        for _ in range(1, K):
+            # Compute distances from each point to the closest centroid
+            distances = np.array([min(np.linalg.norm(x - c)**2 for c in centroids) for x in X])
+
+            # Compute probabilities proportional to squared distances
+            probabilities = distances / distances.sum()
+
+            # Randomly select the next centroid based on probabilities
+            next_centroid_idx = np.random.choice(N, p=probabilities)
+            centroids.append(X[next_centroid_idx])
+
+        return np.array(centroids)
+
+    def formulate_lp(self, X, K):
+        """
+        Formulate the LP for soft clustering.
+        """
+        N, M = X.shape  # Number of samples and features
+        n_vars = N * K  # Number of decision variables
+
+        # Compute distance matrix
+        distances = np.zeros((N, K))
+        for i in range(N):
+            for j in range(K):
+                distances[i, j] = np.linalg.norm(X[i] - self.cluster_centers_[j])
+
+        # Flatten the distance matrix for the objective function
+        c = distances.flatten()
+        # suppress any inf, NaN, or none-type values
+        c[~np.isfinite(c)]=0
+
+        # Equality constraint: Probabilities sum to 1 for each point
+        A_eq = np.zeros((N, n_vars))
+        for i in range(N):
+            for j in range(K):
+                A_eq[i, i * K + j] = 1
+        b_eq = np.ones(N)
+
+        # Bounds: 0 <= z_ij <= 1
+        bounds = [(0, 1) for _ in range(n_vars)]
+
+        return c, A_eq, b_eq, bounds
+
+    
+    def solve_lp(self, c, A_eq, b_eq, bounds):
+        """
+        Solve the LP using linprog.
+
+        Args:
+            c (ndarray): Coefficients for the objective function.
+            A_eq (ndarray): Equality constraint matrix.
+            b_eq (ndarray): Equality constraint vector.
+            bounds (list): Bounds for decision variables.
+
+        Returns:
+            z (ndarray): Optimized decision variables.
+        """
+        result = linprog(c, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method="highs")
+        if not result.success:
+            raise ValueError("LP solution failed.")
+        return result.x
+    
+    def update_centroids(self, X, z, K):
+        """
+        Update centroids using soft assignments.
+        """
+        new_centroids = []
+        z = z.reshape(X.shape[0], K)  # Reshape z to (N, K)
+        for j in range(K):
+            weights = z[:, j]
+            weighted_sum = np.sum(weights[:, None] * X, axis=0)
+            centroid = weighted_sum / weights.sum()
+            new_centroids.append(centroid)
+        return np.array(new_centroids)
+    
+    def train(self, trainX, max_iters=20, tol=1e-4):
+        """
+        Iterative LP-based clustering with PCA preprocessing.
+        """
+        trainX_reduced = self.preprocess_data(trainX)
+        self.cluster_centers_ = trainX_reduced[np.random.choice(trainX_reduced.shape[0], self.K, replace=False)]
+
+        for iteration in range(max_iters):
+            c, A_eq, b_eq, bounds = self.formulate_lp(trainX_reduced, self.K)
+            z = self.solve_lp(c, A_eq, b_eq, bounds)
+            z = z.reshape(trainX_reduced.shape[0], self.K)
+
+            self.soft_labels = z  # Store soft assignments
+
+            new_centroids = self.update_centroids(trainX_reduced, z, self.K)
+
+            if np.linalg.norm(new_centroids - self.cluster_centers_) < tol:
+                print(f"Converged after {iteration + 1} iterations.")
+                break
+
+            self.cluster_centers_ = new_centroids
+
+        return self.soft_labels
+
+    def infer_cluster(self, testX):
+        """
+        Assign new data points to the existing clusters and postprocess results.
+        """
+        testX_reduced = self.pca.transform(testX)
+        soft_assignments = np.array([
+            np.array([1 / (1 + np.linalg.norm(x - c)) for c in self.cluster_centers_])
+            for x in testX_reduced
+        ])
+        soft_assignments /= soft_assignments.sum(axis=1, keepdims=True)
+
+        self.cluster_centers_original_ = self.postprocess_centroids()
+        return soft_assignments
+
+# Soft Clustering Classifier
+class MySoftClusteringClassifier:
+    def __init__(self, clustering_model, base_classifier=None):
+        """
+        Initialize the soft clustering classifier.
+
+        Args:
+            clustering_model: An instance of the MySoftClustering class.
+            base_classifier: A classifier (e.g., RandomForest). Defaults to RandomForestClassifier.
+        """
+        self.clustering_model = clustering_model
+        self.base_classifier = base_classifier or RandomForestClassifier()
+
+    def fit(self, X, y):
+        """
+        Train the classifier using both features and soft cluster assignments.
+
+        Args:
+            X: Feature matrix (N x M).
+            y: Target labels (N,).
+        """
+        # Step 1: Train clustering model
+        soft_labels = self.clustering_model.train(X)
+
+        # Step 2: Append soft labels as additional features
+        X_augmented = np.hstack((X, soft_labels))
+
+        # Step 3: Train the classifier on augmented features
+        self.base_classifier.fit(X_augmented, y)
+
+    def predict(self, X):
+        """
+        Predict labels for new data using the classifier.
+
+        Args:
+            X: Feature matrix (N x M).
+
+        Returns:
+            Predicted labels for X.
+        """
+        # Step 1: Get soft labels for the test data
+        soft_labels = self.clustering_model.infer_cluster(X)
+
+        # Step 2: Augment test data with soft labels
+        X_augmented = np.hstack((X, soft_labels))
+
+        # Step 3: Predict using the classifier
+        return self.base_classifier.predict(X_augmented)
+    
+    def evaluate(self, X, y):
+        """
+        Evaluate the classifier on a test set.
+
+        Args:
+            X: Feature matrix (N x M).
+            y: True labels (N,).
+
+        Returns:
+            Accuracy of the classifier.
+        """
+        y_pred = self.predict(X)
+        return accuracy_score(y, y_pred)
+    
+def run_soft_clustering_classifier(trainX, trainY, K):
+    clustering_model = MySoftClustering(K)
+    classifier = MySoftClusteringClassifier(clustering_model)
+
+    classifier.fit(trainX, trainY)
+
+    return classifier
+
 # Function to aggregate and plot performance across partitions
 def plot_performance_across_partitions(data, dataset_name, metric, title, ylabel):
     """
@@ -452,6 +696,68 @@ def plot_performance_across_partitions(data, dataset_name, metric, title, ylabel
     plt.ylabel(ylabel)
     plt.title(title)
     plt.legend(title="Cluster Size (K)")
+    plt.grid(True)
+    plt.show()
+
+# Function to compare soft vs hard clustering performance
+def compare_soft_vs_hard_clustering(data_soft, data_hard, dataset_name, metric, title, ylabel):
+    """
+    Compares soft clustering vs hard clustering performance across dataset partitions for every cluster size (K).
+    
+    Args:
+        data_soft (dict): Nested dictionary containing partitioned results for soft clustering.
+        data_hard (dict): Nested dictionary containing partitioned results for hard clustering.
+        dataset_name (str): Dataset name (e.g., 'synthetic' or 'mnist').
+        metric (str): Metric to plot (e.g., 'classification_accuracy').
+        title (str): Title of the plot.
+        ylabel (str): Label for the y-axis.
+    """
+    # Extract unique cluster sizes (K) from the soft data
+    cluster_sizes = None
+    for portion in data_soft.values():
+        if dataset_name in portion:
+            cluster_sizes = portion[dataset_name]['K']
+            break
+
+    if cluster_sizes is None:
+        raise ValueError(f"Dataset '{dataset_name}' not found in the data.")
+
+    # Aggregate metrics for soft and hard clustering
+    aggregated_soft = {k: [] for k in cluster_sizes}
+    aggregated_hard = {k: [] for k in cluster_sizes}
+
+    for portion, datasets in data_soft.items():
+        if dataset_name in datasets:
+            for k, value in zip(datasets[dataset_name]['K'], datasets[dataset_name][metric]):
+                aggregated_soft[k].append(value)
+
+    for portion, datasets in data_hard.items():
+        if dataset_name in datasets:
+            for k, value in zip(datasets[dataset_name]['K'], datasets[dataset_name][metric]):
+                aggregated_hard[k].append(value)
+
+    # Plot results
+    plt.figure(figsize=(12, 8))
+    for k in cluster_sizes:
+        plt.plot(
+            [float(p) for p in data_soft.keys()],
+            aggregated_soft[k],
+            marker="o",
+            linestyle="-",
+            label=f"Soft Clustering (K = {k})",
+        )
+        plt.plot(
+            [float(p) for p in data_hard.keys()],
+            aggregated_hard[k],
+            marker="x",
+            linestyle="--",
+            label=f"Hard Clustering (K = {k})",
+        )
+
+    plt.xlabel("Dataset Portion")
+    plt.ylabel(ylabel)
+    plt.title(title)
+    plt.legend(title="Clustering Type")
     plt.grid(True)
     plt.show()
 
