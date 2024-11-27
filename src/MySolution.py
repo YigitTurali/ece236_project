@@ -501,7 +501,7 @@ class MyFeatureSelection:
         # If class labels array is NoneType, do clustering branch        
         if trainY is None:
             print("doing clustering feature selection")
-            feat_to_keep = self.unsupervised_feature_selection(trainX, trainY)
+            feat_to_keep = self.unsupervised_feature_selection(trainX)
             
         # Else, do classification branch
         else:
@@ -512,7 +512,7 @@ class MyFeatureSelection:
         return feat_to_keep
 
 
-    def unsupervised_feature_selection(self, trainX, trainY): 
+    def unsupervised_feature_selection(self, trainX): 
         # Compute pixel variances
         variance = np.var(trainX, axis=0)
 
@@ -529,16 +529,44 @@ class MyFeatureSelection:
         t = mdl.Var(value=0, lb=0)
 
         # Define pixel selection vector, with its integrality and 0/1 constraints
-        s = [mdl.Var(value=0, lb=0, ub=1, integer=True) for i in range(trainX.shape[1])]
+        # s = [mdl.Var(value=0, lb=0, ub=1, integer=True) for i in range(trainX.shape[1])]
+        s = [mdl.Var(value=0, lb=0, ub=1) for i in range(trainX.shape[1])]
+
+
+        # Add regularization variables to incentivize distance bewteen seleted points
+        # Want to try to minimize variance across each dimension - spread selected pixels equally across columns and rows
+        
+        image_side_length = int(trainX.shape[1]**.5)
+        # Column sum
+        col_sums = [mdl.Intermediate(mdl.sum([s[i+image_side_length*j] for j in range(image_side_length)])) for i in range(image_side_length)]
+        # Row sum
+        row_sums = [mdl.Intermediate(mdl.sum([s[image_side_length*i+j] for j in range(image_side_length)])) for i in range(image_side_length)]
+
+        # Row and column averages
+        col_avg = mdl.Intermediate(sum(col_sums) / image_side_length)
+        row_avg = mdl.Intermediate(sum(row_sums) / image_side_length)
+
+        # Absolute col/row sum deviations from average
+        col_abs_deviation = [mdl.abs2(csum-col_avg) for csum in col_sums]
+        row_abs_deviation = [mdl.abs2(rsum-row_avg) for rsum in row_sums]
+
+        # Compute variances for rows and columns
+        col_var = mdl.Intermediate(mdl.sum([dev for dev in col_abs_deviation]) / (image_side_length))
+        row_var = mdl.Intermediate(mdl.sum([dev for dev in row_abs_deviation]) / (image_side_length))
+
+        lambda1 = 1E5
+        lambda2 = 1E5
+
 
         # Define constraints
         ## Max number of pixels constraint
         mdl.Equation(np.sum(s) <= K)
         ## Set t to the sum variance across all selected pixels
         mdl.Equation(t <= mdl.sum([s_i*z_i for (s_i, z_i) in zip(s,z)]))
+        
 
         # Set objective function to maximize t
-        mdl.Maximize(t)
+        mdl.Maximize(t - lambda1*col_var - lambda2*row_var)
         mdl.options.MAX_ITER = 10000
         mdl.options.SOLVER = 1    
         mdl.options.IMODE = 3
@@ -548,8 +576,12 @@ class MyFeatureSelection:
         # Get the 1/0 mask of selected features from the final values of s
         feature_mask = np.array([s_i.value for s_i in s])
 
-        # Get feature indices of the selected features from the mask
+        # # Get feature indices of the selected features from the mask
         selected_feature_indices = np.nonzero(feature_mask)[0]
+
+        # Get top num_features indices and tose are the selected features
+        selected_feature_indices = np.argpartition(feature_mask.flatten(), -1*self.num_features)[-1*self.num_features:]
+
         return selected_feature_indices
 
 
@@ -595,39 +627,77 @@ class MyFeatureSelection:
         # Formulate and run the integer linear program
         mdl = GEKKO(remote=False)
 
-        ### Define constants and variables
         # Define max features
         K = mdl.Const(self.num_features)
+
         # Define covariance vector constants
         z_0_1 = [mdl.Const(value=val) for val in pairwise_covariances[0]]
         z_0_2 = [mdl.Const(value=val) for val in pairwise_covariances[1]]
         z_1_2 = [mdl.Const(value=val) for val in pairwise_covariances[2]]
+
         # Define t_min auxiliary variable
         t_min = mdl.Var(value=0, lb=0)
-        # Define pixel selection vector, with its integrality and 0/1 constraints
-        s = [mdl.Var(value=0, lb=0, ub=1, integer=True) for i in range(trainX.shape[1])]
-        # s = [mdl.Var(value=0, lb=0, ub=1) for i in range(trainX.shape[1])]
-        # print(len(s))
 
-        ### Define constraints
+        # Define pixel selection vector, with its integrality and 0/1 constraints
+        # s = [mdl.Var(value=0, lb=0, ub=1, integer=True) for i in range(trainX.shape[1])]
+        s = [mdl.Var(value=0, lb=0, ub=1) for i in range(trainX.shape[1])]
+
+
+        # Add regularization variables to incentivize distance bewteen seleted points
+        # Want to try to minimize variance across each dimension - spread selected pixels equally across columns and rows
+        
+        image_side_length = int(trainX.shape[1]**.5)
+        # Column sum
+        col_sums = [mdl.Intermediate(mdl.sum([s[i+image_side_length*j] for j in range(image_side_length)])) for i in range(image_side_length)]
+        # Row sum
+        row_sums = [mdl.Intermediate(mdl.sum([s[image_side_length*i+j] for j in range(image_side_length)])) for i in range(image_side_length)]
+
+        # Row and column averages
+        col_avg = mdl.Intermediate(sum(col_sums) / image_side_length)
+        row_avg = mdl.Intermediate(sum(row_sums) / image_side_length)
+
+        # Absolute col/row sum deviations from average
+        col_abs_deviation = [mdl.abs2(csum-col_avg) for csum in col_sums]
+        row_abs_deviation = [mdl.abs2(rsum-row_avg) for rsum in row_sums]
+
+        # Compute variances for rows and columns
+        col_var = mdl.Intermediate(mdl.sum([dev for dev in col_abs_deviation]) / (image_side_length))
+        row_var = mdl.Intermediate(mdl.sum([dev for dev in row_abs_deviation]) / (image_side_length))
+
+        lambda1 = 1E2
+        lambda2 = 1E2
+
+
+        # print(len(s))
+        # Define constraints
         ## Max number of pixels constraint
         mdl.Equation(np.sum(s) <= K)
+
         ## Set t_min to the min sum absolute covariance across all class pairs
         # mdl.Equation(t_min <= np.dot(s, z_0_1))
         # mdl.Equation(t_min <= np.dot(s, z_0_2))
         # mdl.Equation(t_min <= np.dot(s, z_1_2))
-        ## Reformulate dot products as element-wise multiply and sum to avoid errors in GEKKO
+        ### Reformulate dot products as element-wise multiply and sum to avoid errors in GEKKO
         mdl.Equation(t_min <= mdl.sum([s_i*z_0_1_i for (s_i, z_0_1_i) in zip(s,z_0_1)]))
         mdl.Equation(t_min <= mdl.sum([s_i*z_0_2_i for (s_i, z_0_2_i) in zip(s,z_0_2)]))
         mdl.Equation(t_min <= mdl.sum([s_i*z_1_2_i for (s_i, z_1_2_i) in zip(s,z_1_2)]))
 
-        # Set objective function to maximize t_min
-        mdl.Maximize(t_min)
-        mdl.options.MAX_ITER = 10000
+        
+        # Set objective function to maximize t_min - regularization terms
+        mdl.Maximize(t_min - lambda1*col_var - lambda2*row_var)
+
+        # mdl.Obj(t_min + ())
+
+        # mdl.options.MAX_ITER = 400
         mdl.options.SOLVER = 1    
         mdl.options.IMODE = 3
-        # mdl.solve(disp=True)
-        mdl.solve()
+
+        mdl.solver_options = [  'minlp_gap_tol 1.0e-1',\
+                                'minlp_maximum_iterations 1000',\
+                                'minlp_max_iter_with_int_sol 400']
+
+        mdl.solve(disp=True)
+
 
         # Get the 1/0 mask of selected features from the final values of s
         feature_mask = np.array([s_i.value for s_i in s])
@@ -635,6 +705,9 @@ class MyFeatureSelection:
         # Get feature indices of the selected features from the mask
         selected_feature_indices = np.nonzero(feature_mask)[0]
         
+        # Get top num_features indices and tose are the selected features
+        selected_feature_indices = np.argpartition(feature_mask.flatten(), -1*self.num_features)[-1*self.num_features:]
+
         return selected_feature_indices
 
     
