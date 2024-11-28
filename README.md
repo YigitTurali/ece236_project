@@ -76,13 +76,6 @@ Researchers are encouraged to:
 
 Detailed instructions for running the code, reproducing experiments, and interpreting results will be provided in subsequent documentation.
 
-## License
-
-[Specify the license under which the project is released]
-
-## Contact
-
-For inquiries, please contact the project authors through their institutional email addresses.
 
 ## Acknowledgments
 
