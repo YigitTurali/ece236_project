@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This research project explores advanced machine learning techniques for multi-class classification, focusing on both supervised and unsupervised learning methodologies. The project was conducted by researchers from the Electrical and Computer Engineering department at the University of California, Los Angeles.
+This research project explores linear programming techniques for multi-class classification, focusing on both supervised and unsupervised learning methodologies. The project was conducted for the course ECE236A, offered by the Electrical and Computer Engineering department at the University of California, Los Angeles.
 
 ## Authors
 
@@ -54,16 +54,9 @@ Two distinct datasets were provided for comprehensive evaluation and comparative
 ## Methodology
 
 The project employs a systematic approach to:
-- Implement machine learning algorithms
+- Implement Linear Programming techniques
 - Conduct rigorous performance analysis
 - Visualize and interpret results
-
-## Reproducibility
-
-Researchers are encouraged to:
-- Review the implementation details
-- Replicate the experimental setup
-- Validate findings using provided datasets
 
 ## Repository Structure
 
@@ -71,12 +64,3 @@ Researchers are encouraged to:
 - `/src/`: Source code for implemented algorithms
 - `/docs/`: Project documentation and reports
 - `/notebooks/`: Jupyter notebooks with analysis and visualizations
-
-## Usage
-
-Detailed instructions for running the code, reproducing experiments, and interpreting results will be provided in subsequent documentation.
-
-
-## Acknowledgments
-
-[Optional: Acknowledge any support, funding, or assistance received during the project]
