@@ -394,11 +394,13 @@ def plot_clustering_nmi(dataset, title):
         K = values.get("K", [])
         clustering_nmi = values.get("clustering_nmi", [])
         plt.plot(K, clustering_nmi, marker="o", label=f"{key} dataset")
-    plt.xlabel("Number of Clusters (K)")
-    plt.ylabel("Clustering NMI")
-    plt.title(title)
-    plt.legend()
+    plt.xlabel("Number of Clusters (K)", fontsize=14)
+    plt.ylabel("Clustering NMI", fontsize=14)
+    plt.title(title, fontsize=16)
+    plt.legend(fontsize=14)
     plt.grid(True)
+    plt.xticks(fontsize=14)
+    plt.yticks(fontsize=14)
     plt.show()
 
 # Plot Function for Classification Accuracy
@@ -408,11 +410,13 @@ def plot_classification_accuracy(dataset, title):
         K = values.get("K", [])
         classification_accuracy = values.get("classification_accuracy", [])
         plt.plot(K, classification_accuracy, marker="s", label=f"{key} dataset")
-    plt.xlabel("Number of Clusters (K)")
-    plt.ylabel("Classification Accuracy")
-    plt.title(title)
-    plt.legend()
+    plt.xlabel("Number of Clusters (K)", fontsize=14)
+    plt.ylabel("Classification Accuracy", fontsize=14)
+    plt.title(title, fontsize=14)
+    plt.legend(fontsize=14)
     plt.grid(True)
+    plt.xticks(fontsize=14)
+    plt.yticks(fontsize=14)
     plt.show()
 
 # Soft Clustering
@@ -600,7 +604,7 @@ class MySoftClusteringClassifier:
         self.clustering_model = clustering_model
         self.base_classifier = base_classifier or RandomForestClassifier()
 
-    def fit(self, X, y):
+    def train(self, X, y):
         """
         Train the classifier using both features and soft cluster assignments.
 
@@ -615,7 +619,7 @@ class MySoftClusteringClassifier:
         X_augmented = np.hstack((X, soft_labels))
 
         # Step 3: Train the classifier on augmented features
-        self.base_classifier.fit(X_augmented, y)
+        self.base_classifier.train(X_augmented, y)
 
     def predict(self, X):
         """
@@ -652,11 +656,171 @@ class MySoftClusteringClassifier:
     
 def run_soft_clustering_classifier(trainX, trainY, K):
     clustering_model = MySoftClustering(K)
-    classifier = MySoftClusteringClassifier(clustering_model)
+    classifier_model = MyClassifier()
+    classifier = MySoftClusteringClassifier(clustering_model, classifier_model)
 
-    classifier.fit(trainX, trainY)
+    classifier.train(trainX, trainY)
 
     return classifier
+
+class MySoftClusteringClassifierAlternative:
+    def __init__(self, clustering_model):
+        """
+        Initialize the soft clustering classifier alternative.
+
+        Args:
+            clustering_model: An instance of the MySoftClustering class.
+        """
+        self.clustering_model = clustering_model
+        self.cluster_labels = None
+
+    def assign_labels_highest_score(self, X, y, soft_labels):
+        """
+        Assign labels to clusters based on the highest total score for each label.
+
+        Args:
+            X: Feature matrix (N x M).
+            y: True labels (N,).
+            soft_labels: Soft cluster assignments (N x K).
+
+        Returns:
+            Cluster labels.
+        """
+        cluster_labels = []
+        for k in range(soft_labels.shape[1]):
+            # Compute the total score for each label in cluster k
+            total_scores = {}
+            for label in np.unique(y):
+                total_scores[label] = np.sum(soft_labels[y == label, k])
+            # Assign the label with the highest total score to cluster k
+            cluster_labels.append(max(total_scores, key=total_scores.get))
+        return np.array(cluster_labels)
+
+    def assign_labels_representative_points(self, X, y, K):
+        """
+        Assign labels to clusters based on the labels of the closest 10% of points to centroids.
+
+        Args:
+            X: Feature matrix (N x M).
+            y: True labels (N,).
+            K: Number of clusters.
+
+        Returns:
+            Cluster labels.
+        """
+        cluster_labels = []
+        X = self.clustering_model.pca.transform(X)
+        for k in range(K):
+            # Compute distances to the centroid
+            distances = np.linalg.norm(X - self.clustering_model.cluster_centers_[k], axis=1)
+
+            # Identify the closest 10% of points
+            num_representative = max(1, int(0.1 * len(distances)))
+            representative_indices = distances.argsort()[:num_representative]
+
+            # Determine the majority label among the representative points
+            representative_labels = y[representative_indices].astype(int)
+            most_common_label = np.bincount(representative_labels).argmax()
+
+            # Assign the most common label to cluster k
+            cluster_labels.append(most_common_label)
+        return np.array(cluster_labels)
+
+    def fit(self, X, y, method='highest_score'):
+        """
+        Assign labels to clusters using the chosen method.
+
+        Args:
+            X: Feature matrix (N x M).
+            y: True labels (N,).
+            method: Method to assign labels ('highest_score' or 'representative_points').
+        """
+        soft_labels = self.clustering_model.train(X)
+
+        if method == 'highest_score':
+            self.cluster_labels = self.assign_labels_highest_score(X, y, soft_labels)
+        elif method == 'representative_points':
+            self.cluster_labels = self.assign_labels_representative_points(X, y, self.clustering_model.K)
+        else:
+            raise ValueError("Invalid method. Choose 'highest_score' or 'representative_points'.")
+
+    def predict(self, X, method='highest_score'):
+        """
+        Predict labels for new data points based on cluster labels.
+
+        Args:
+            X: Feature matrix (N x M).
+
+        Returns:
+            Predicted labels for X.
+        """
+        soft_assignments = self.clustering_model.infer_cluster(X)
+        if method == 'highest_score':
+            cluster_assignments = soft_assignments.argmax(axis=1)
+        elif method == 'representative_points':
+            cluster_assignments = soft_assignments
+        return np.array([self.cluster_labels[cluster] for cluster in cluster_assignments])
+
+    def evaluate(self, X, y, method='highest_score'):
+        """
+        Evaluate the clustering-based classifier on a test set.
+
+        Args:
+            X: Feature matrix (N x M).
+            y: True labels (N,).
+
+        Returns:
+            Accuracy of the classifier.
+        """
+        y_pred = self.predict(X, method)
+        return accuracy_score(y, y_pred)
+
+def run_soft_clustering_alternative(trainX, trainY, K, method='highest_score'):
+    if method == 'highest_score':
+        clustering_model = MySoftClustering(K)
+        classifier = MySoftClusteringClassifierAlternative(clustering_model)
+
+    elif method == 'representative_points':
+        clustering_model = MyClustering(K)
+        classifier = MySoftClusteringClassifierAlternative(clustering_model)
+
+    classifier.fit(trainX, trainY, method=method)
+    return classifier
+
+# Plot Function to Compare Two Datasets
+def compare_classification_accuracy(dataset1, dataset2, title, task_name):
+    """
+    Plot classification accuracy for two datasets to compare their performance.
+
+    Args:
+        dataset1 (dict): A dictionary with keys for dataset1 configurations and accuracy.
+                         Example: { 'method1': {'K': [2, 3, 4], 'classification_accuracy': [0.8, 0.85, 0.9]} }
+        dataset2 (dict): A dictionary with keys for dataset2 configurations and accuracy.
+                         Example: { 'method1': {'K': [2, 3, 4], 'classification_accuracy': [0.75, 0.8, 0.88]} }
+        title (str): Title for the plot.
+    """
+    plt.figure(figsize=(10, 6))
+    
+    # Plot dataset1 results
+    for key, values in dataset1.items():
+        K = values.get("K", [])
+        classification_accuracy = values.get("classification_accuracy", [])
+        plt.plot(K, classification_accuracy, marker="o", label=f"{key} (Majority Voting)", linestyle="--")
+    
+    # Plot dataset2 results
+    for key, values in dataset2.items():
+        K = values.get("K", [])
+        classification_accuracy = values.get("classification_accuracy", [])
+        plt.plot(K, classification_accuracy, marker="s", label=f"{key} ({task_name})", linestyle="-")
+    
+    plt.xlabel("Number of Clusters (K)", fontsize=14)
+    plt.ylabel("Classification Accuracy", fontsize=14)
+    plt.title(title, fontsize=16)
+    plt.legend(fontsize=14)
+    plt.grid(True)
+    plt.xticks(fontsize=14)
+    plt.yticks(fontsize=14)
+    plt.show()
 
 # Function to aggregate and plot performance across partitions
 def plot_performance_across_partitions(data, dataset_name, metric, title, ylabel):
@@ -692,11 +856,13 @@ def plot_performance_across_partitions(data, dataset_name, metric, title, ylabel
     for k, values in aggregated_metrics.items():
         plt.plot([float(p) for p in data.keys()], values, marker="o", label=f"K = {k}")
     
-    plt.xlabel("Dataset Portion")
-    plt.ylabel(ylabel)
-    plt.title(title)
-    plt.legend(title="Cluster Size (K)")
+    plt.xlabel("Dataset Portion", fontsize=14)
+    plt.ylabel(ylabel, fontsize=14)
+    plt.title(title, fontsize=16)
+    plt.legend(title="Cluster Size (K)", fontsize=14)
     plt.grid(True)
+    plt.xticks(fontsize=14)
+    plt.yticks(fontsize=14)
     plt.show()
 
 # Function to compare soft vs hard clustering performance
@@ -737,7 +903,7 @@ def compare_soft_vs_hard_clustering(data_soft, data_hard, dataset_name, metric, 
                 aggregated_hard[k].append(value)
 
     # Plot results
-    plt.figure(figsize=(12, 8))
+    plt.figure(figsize=(14, 8))
     for k in cluster_sizes:
         plt.plot(
             [float(p) for p in data_soft.keys()],
@@ -754,11 +920,13 @@ def compare_soft_vs_hard_clustering(data_soft, data_hard, dataset_name, metric, 
             label=f"Hard Clustering (K = {k})",
         )
 
-    plt.xlabel("Dataset Portion")
-    plt.ylabel(ylabel)
-    plt.title(title)
-    plt.legend(title="Clustering Type")
+    plt.xlabel("Dataset Portion",fontsize=14)
+    plt.ylabel(ylabel,fontsize=14)
+    plt.title(title,fontsize=16)
+    plt.legend(title="Clustering Type",fontsize=14)
     plt.grid(True)
+    plt.xticks(fontsize=14)
+    plt.yticks(fontsize=14)
     plt.show()
 
 
@@ -835,7 +1003,6 @@ class MyFeatureSelection:
         t = mdl.Var(value=0, lb=0)
 
         # Define pixel selection vector, with its integrality and 0/1 constraints
-        # s = [mdl.Var(value=0, lb=0, ub=1, integer=True) for i in range(trainX.shape[1])]
         s = [mdl.Var(value=0, lb=0, ub=1) for i in range(trainX.shape[1])]
 
 
@@ -876,8 +1043,7 @@ class MyFeatureSelection:
         mdl.options.MAX_ITER = 10000
         mdl.options.SOLVER = 1    
         mdl.options.IMODE = 3
-        # mdl.solve(disp=True)
-        mdl.solve()
+        mdl.solve(disp=False)
 
         # Get the 1/0 mask of selected features from the final values of s
         feature_mask = np.array([s_i.value for s_i in s])
@@ -915,9 +1081,6 @@ class MyFeatureSelection:
             # Get X and Y samples from the indices
             X_prime = np.take(trainX, indices, axis=0)
             Y_prime = np.take(trainY, indices)
-            
-            # print(X_prime.shape)
-            # print(Y_prime.shape)
 
             # relabel original class labels to -1, +1
             for i in range(len(Y_prime)):
@@ -945,7 +1108,6 @@ class MyFeatureSelection:
         t_min = mdl.Var(value=0, lb=0)
 
         # Define pixel selection vector, with its integrality and 0/1 constraints
-        # s = [mdl.Var(value=0, lb=0, ub=1, integer=True) for i in range(trainX.shape[1])]
         s = [mdl.Var(value=0, lb=0, ub=1) for i in range(trainX.shape[1])]
 
 
@@ -974,15 +1136,11 @@ class MyFeatureSelection:
         lambda2 = 1E2
 
 
-        # print(len(s))
         # Define constraints
         ## Max number of pixels constraint
         mdl.Equation(np.sum(s) <= K)
 
         ## Set t_min to the min sum absolute covariance across all class pairs
-        # mdl.Equation(t_min <= np.dot(s, z_0_1))
-        # mdl.Equation(t_min <= np.dot(s, z_0_2))
-        # mdl.Equation(t_min <= np.dot(s, z_1_2))
         ### Reformulate dot products as element-wise multiply and sum to avoid errors in GEKKO
         mdl.Equation(t_min <= mdl.sum([s_i*z_0_1_i for (s_i, z_0_1_i) in zip(s,z_0_1)]))
         mdl.Equation(t_min <= mdl.sum([s_i*z_0_2_i for (s_i, z_0_2_i) in zip(s,z_0_2)]))
@@ -1002,7 +1160,7 @@ class MyFeatureSelection:
                                 'minlp_maximum_iterations 1000',\
                                 'minlp_max_iter_with_int_sol 400']
 
-        mdl.solve(disp=True)
+        mdl.solve(disp=False)
 
 
         # Get the 1/0 mask of selected features from the final values of s
